@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# wrap-omp: run oh-my-pi inside a bubblewrap sandbox.
+#
+# Override the omp binary:
+#   OMP_BIN=/path/to/omp ./omp-bwrap
+#
+# Optional config file (JSON with comments):
+#   ~/.config/wrap-omp.conf   (preferred)
+#   ~/wrap-omp.conf           (fallback)
+#
+# Config keys:
+#   "env"                — extra env var names to pull from host into sandbox
+#   "writeable_mounts"   — extra paths to --bind (read-write)
+#   "read_only_mounts"   — extra paths to --ro-bind
+
+set -euo pipefail
+
+OMP_BIN="${OMP_BIN:-omp}"
+WORKDIR="${WORKDIR:-$(pwd)}"
+WORKDIR="$(cd "$WORKDIR" && pwd)"
+
+# ---------------------------------------------------------------------------
+# Prerequisite checks
+# ---------------------------------------------------------------------------
+if ! command -v bwrap &>/dev/null; then
+    echo "wrap-omp: error: bubblewrap sandbox tool bwrap is required but not found on PATH" >&2
+    exit 1
+fi
+
+if [[ ! -x "${OMP_BIN}" ]] && ! command -v "${OMP_BIN}" &>/dev/null; then
+    echo "wrap-omp: error: ${OMP_BIN} not found or not executable" >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Config file (optional) — extra mounts and env vars beyond the hardcoded set
+# ---------------------------------------------------------------------------
+EXTRA_ENV_VARS=()
+EXTRA_BIND_MOUNTS=()
+EXTRA_RO_MOUNTS=()
+
+OMP_CONF=""
+for dir in "${HOME}/.config" "${HOME}"; do
+    if [[ -f "${dir}/wrap-omp.conf" ]]; then
+        OMP_CONF="${dir}/wrap-omp.conf"
+        break
+    fi
+done
+
+if [[ -n "${OMP_CONF}" ]]; then
+    if ! command -v jq &>/dev/null; then
+        echo "wrap-omp: error: jq is required to parse ${OMP_CONF}" >&2
+        exit 1
+    fi
+
+    # Strip // comments, then extract arrays with jq
+    CLEAN="$(sed 's|//.*$||' "${OMP_CONF}")"
+
+    while IFS= read -r var; do
+        [[ -n "$var" ]] && EXTRA_ENV_VARS+=("$var")
+    done < <(echo "$CLEAN" | jq -r '.env[]? // empty')
+
+    while IFS= read -r p; do
+        [[ -n "$p" ]] && EXTRA_BIND_MOUNTS+=("${p/#\~/$HOME}")
+    done < <(echo "$CLEAN" | jq -r '.writeable_mounts[]? // empty')
+
+    while IFS= read -r p; do
+        [[ -n "$p" ]] && EXTRA_RO_MOUNTS+=("${p/#\~/$HOME}")
+    done < <(echo "$CLEAN" | jq -r '.read_only_mounts[]? // empty')
+fi
+
+# ---------------------------------------------------------------------------
+# Build bwrap argument array
+# bwrap flag order is significant: mounts stack left-to-right on a fresh tmpfs.
+#
+# base filesystem goes first
+# ---------------------------------------------------------------------------
+BWRAP_ARGS=(
+    --unshare-all
+    --share-net
+    --dev /dev
+    --proc /proc
+    --ro-bind /usr /usr
+    --ro-bind /etc /etc
+    --ro-bind /run/systemd/resolve/stub-resolv.conf /run/systemd/resolve/stub-resolv.conf
+    --symlink usr/bin /bin
+    --symlink usr/lib /lib
+    --symlink usr/lib64 /lib64
+    --symlink usr/sbin /sbin
+    --dir "/tmp"
+    --dir "${HOME}"
+)
+
+# append mounts form config file
+for mnt in "${EXTRA_RO_MOUNTS[@]}"; do
+    BWRAP_ARGS+=(--ro-bind "$mnt" "$mnt")
+done
+
+for mnt in "${EXTRA_BIND_MOUNTS[@]}"; do
+    BWRAP_ARGS+=(--bind "$mnt" "$mnt")
+done
+
+# make sure workspace and paths needed by omp are accessible
+BWRAP_ARGS+=(
+    --ro-bind "${HOME}/.local" "${HOME}/.local"
+    --ro-bind "${HOME}/.bun" "${HOME}/.bun"
+    --bind "${HOME}/.omp" "${HOME}/.omp"
+    --bind "${WORKDIR}" "${WORKDIR}"
+)
+
+BWRAP_ARGS+=(
+    --clearenv
+    --setenv container "bwrap" # on Fedora this shows a dot in bash prompt signifying you're in sandbox.
+    --setenv HOME "${HOME}"
+    --setenv USER "${USER}"
+    --setenv PATH "${PATH}"
+)
+
+# append environment variables form config
+for var in "${EXTRA_ENV_VARS[@]}"; do
+    if [[ -v "${var}" ]]; then
+        BWRAP_ARGS+=(--setenv "$var" "${!var}")
+    else
+        echo "wrap-omp: warning: ${var} is not set in the environment, skipping" >&2
+    fi
+done
+
+BWRAP_ARGS+=(
+    --chdir "${WORKDIR}"
+    "${OMP_BIN}"
+)
+
+exec bwrap "${BWRAP_ARGS[@]}" "$@"

@@ -1,0 +1,17 @@
+{
+    // wrap-omp config. Install as ~/.config/wrap.config
+    // host environment variables to pass into sandbox (good for API keys)
+    "env": [
+        "SOME_API_KEY"
+    ],
+    // host paths that will be mounted read only in sandbox
+    "read_only_mounts": [
+        "~/my_git_repos",
+        "~/.gitconfig"
+    ],
+    // host paths that will be present and writeable in sandbox
+    // workspace folder is writeable by default
+    "writeable_mounts": [
+        "~/some_writeable_dir"
+    ]
+}
