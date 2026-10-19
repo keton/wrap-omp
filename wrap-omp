@@ -17,7 +17,8 @@ set -euo pipefail
 
 OMP_BIN="${OMP_BIN:-omp}"
 WORKDIR="${WORKDIR:-$(pwd)}"
-WORKDIR="$(cd "$WORKDIR" && pwd)"
+WORKDIR="$(cd "$WORKDIR" && pwd -P)"
+HOME_REAL="$(cd "${HOME}" && pwd -P)"
 
 # ---------------------------------------------------------------------------
 # Prerequisite checks
@@ -101,12 +102,20 @@ for mnt in "${EXTRA_BIND_MOUNTS[@]}"; do
 done
 
 # make sure workspace and paths needed by omp are accessible
+# workspace first, then ~/.omp on top, so .omp stays writable inside a $HOME workspace
 BWRAP_ARGS+=(
     --ro-bind "${HOME}/.local" "${HOME}/.local"
     --ro-bind "${HOME}/.bun" "${HOME}/.bun"
-    --bind "${HOME}/.omp" "${HOME}/.omp"
-    --bind "${WORKDIR}" "${WORKDIR}"
 )
+
+if [[ "${WORKDIR}" == "${HOME_REAL}" ]]; then
+    # never expose the user's home as writeable
+    BWRAP_ARGS+=(--ro-bind "${WORKDIR}" "${WORKDIR}")
+else
+    BWRAP_ARGS+=(--bind "${WORKDIR}" "${WORKDIR}")
+fi
+
+BWRAP_ARGS+=(--bind "${HOME}/.omp" "${HOME}/.omp")
 
 BWRAP_ARGS+=(
     --clearenv

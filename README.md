@@ -8,6 +8,7 @@ __Note:__ This is __NOT__ a protection against malicious plugins or skills. Hack
 - filesystem is a blank tmpfs with critical folders mounted __read only__
 - minimal set of files required for oh-my-pi to function
 - only `~/.omp` and workspace folder (`$PWD` by default) are writeable
+- when the workspace is `$HOME`, it is mounted read only (`~/.omp` stays writeable)
 - host environment variables are not passed to the sandbox
 
 ## Configurable
