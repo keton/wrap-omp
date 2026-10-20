@@ -1,0 +1,19 @@
+{"event": "tool_call_start", "tool": "ble_scan_start", "args": {"timeout_s": 5}, "connection_id": null, "ts": "2026-10-20T05:27:30.055680+00:00"}
+{"event": "tool_call_end", "tool": "ble_scan_start", "ok": false, "error_code": "internal", "duration_ms": 21.3, "connection_id": null, "ts": "2026-10-20T05:27:30.077144+00:00"}
+{"event": "tool_call_start", "tool": "ble_scan_results", "args": {}, "connection_id": null, "ts": "2026-10-20T05:27:30.079274+00:00"}
+{"event": "tool_call_start", "tool": "ble_scan_start", "args": {"timeout_s": 6}, "connection_id": null, "ts": "2026-10-20T05:27:42.009437+00:00"}
+{"event": "tool_call_end", "tool": "ble_scan_start", "ok": true, "error_code": null, "duration_ms": 30.7, "connection_id": null, "ts": "2026-10-20T05:27:42.040350+00:00"}
+{"event": "tool_call_start", "tool": "ble_scan_start", "args": {"timeout_s": 10, "active": true}, "connection_id": null, "ts": "2026-10-20T05:27:53.194429+00:00"}
+{"event": "tool_call_end", "tool": "ble_scan_start", "ok": true, "error_code": null, "duration_ms": 32.5, "connection_id": null, "ts": "2026-10-20T05:27:53.227037+00:00"}
+{"event": "tool_call_start", "tool": "ble_scan_get_results", "args": {"scan_id": "b93c798bc65c"}, "connection_id": null, "ts": "2026-10-20T05:28:04.232510+00:00"}
+{"event": "tool_call_end", "tool": "ble_scan_get_results", "ok": true, "error_code": null, "duration_ms": 0.1, "connection_id": null, "ts": "2026-10-20T05:28:04.232932+00:00"}
+{"event": "tool_call_start", "tool": "ble_scans_list", "args": {}, "connection_id": null, "ts": "2026-10-20T05:28:04.237251+00:00"}
+{"event": "tool_call_end", "tool": "ble_scans_list", "ok": true, "error_code": null, "duration_ms": 0.0, "connection_id": null, "ts": "2026-10-20T05:28:04.237437+00:00"}
+{"event": "tool_call_start", "tool": "ble_scan_start", "args": {"timeout_s": 8}, "connection_id": null, "ts": "2026-10-20T05:28:14.663424+00:00"}
+{"event": "tool_call_end", "tool": "ble_scan_start", "ok": true, "error_code": null, "duration_ms": 32.0, "connection_id": null, "ts": "2026-10-20T05:28:14.695578+00:00"}
+{"event": "tool_call_start", "tool": "ble_scan_get_results", "args": {"scan_id": "8367519791af"}, "connection_id": null, "ts": "2026-10-20T05:28:23.700656+00:00"}
+{"event": "tool_call_end", "tool": "ble_scan_get_results", "ok": true, "error_code": null, "duration_ms": 0.0, "connection_id": null, "ts": "2026-10-20T05:28:23.700896+00:00"}
+{"event": "tool_call_start", "tool": "ble_scan_start", "args": {"timeout_s": 10}, "connection_id": null, "ts": "2026-10-20T05:38:56.827232+00:00"}
+{"event": "tool_call_end", "tool": "ble_scan_start", "ok": true, "error_code": null, "duration_ms": 23.1, "connection_id": null, "ts": "2026-10-20T05:38:56.850889+00:00"}
+{"event": "tool_call_start", "tool": "ble_scan_get_results", "args": {"scan_id": "17d1d44fce9c"}, "connection_id": null, "ts": "2026-10-20T05:39:12.043124+00:00"}
+{"event": "tool_call_end", "tool": "ble_scan_get_results", "ok": true, "error_code": null, "duration_ms": 0.0, "connection_id": null, "ts": "2026-10-20T05:39:12.043317+00:00"}

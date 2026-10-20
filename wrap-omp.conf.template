@@ -13,5 +13,24 @@
     // workspace folder is writeable by default
     "writeable_mounts": [
         "~/some_writeable_dir"
-    ]
+    ],
+    // filtered D-Bus access through xdg-dbus-proxy. Nothing is exposed by
+    // default: a bus is reachable from the sandbox only if its list is
+    // non-empty. The proxy runs on the host and only its socket is mounted in;
+    // the sandbox never sees the real bus socket.
+    // Each bus maps to policies passed to xdg-dbus-proxy:
+    //   system  -> /run/dbus/system_bus_socket
+    //   session -> $DBUS_SESSION_BUS_ADDRESS or $XDG_RUNTIME_DIR/bus
+    // Policies (repeatable):
+    //   --see=NAME             name visible (ListNames, GetNameOwner, ...)
+    //   --talk=NAME            call methods, receive signals, start service
+    //   --own=NAME             RequestName/ReleaseName on NAME
+    //   --call=NAME=RULE       restrict calls: [METHOD][@PATH]
+    //   --broadcast=NAME=RULE  restrict received broadcast signals
+    // RULE supports '*' and path suffixes '/*'; NAME supports '.*'.
+    // BLE via BlueZ (bleak/ble-mcp) needs system bus: ["--talk=org.bluez"].
+    "dbus": {
+        "system": [],
+        "session": []
+    }
 }

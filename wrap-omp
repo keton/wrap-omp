@@ -12,6 +12,9 @@
 #   "env"                — extra env var names to pull from host into sandbox
 #   "writeable_mounts"   — extra paths to --bind (read-write)
 #   "read_only_mounts"   — extra paths to --ro-bind
+#   "dbus"               — per-bus xdg-dbus-proxy policy args, e.g.
+#                          {"system": ["--talk=org.bluez"]}; without an entry
+#                          the sandbox has no access to that bus
 
 set -euo pipefail
 
@@ -38,6 +41,8 @@ fi
 EXTRA_ENV_VARS=()
 EXTRA_BIND_MOUNTS=()
 EXTRA_RO_MOUNTS=()
+DBUS_SYSTEM_ARGS=()
+DBUS_SESSION_ARGS=()
 
 OMP_CONF=""
 for dir in "${HOME}/.config" "${HOME}"; do
@@ -67,6 +72,65 @@ if [[ -n "${OMP_CONF}" ]]; then
     while IFS= read -r p; do
         [[ -n "$p" ]] && EXTRA_RO_MOUNTS+=("${p/#\~/$HOME}")
     done < <(echo "$CLEAN" | jq -r '.read_only_mounts[]? // empty')
+
+    while IFS= read -r a; do
+        [[ -n "$a" ]] && DBUS_SYSTEM_ARGS+=("$a")
+    done < <(echo "$CLEAN" | jq -r '.dbus.system[]? // empty')
+
+    while IFS= read -r a; do
+        [[ -n "$a" ]] && DBUS_SESSION_ARGS+=("$a")
+    done < <(echo "$CLEAN" | jq -r '.dbus.session[]? // empty')
+fi
+
+# ---------------------------------------------------------------------------
+# D-Bus proxies: one filtered xdg-dbus-proxy per configured bus, socket bound
+# into the sandbox. Concurrent wrap-omp runs get separate mktemp dirs.
+# ---------------------------------------------------------------------------
+DBUS_PROXY_DIR=""
+DBUS_PROXY_PIDS=()
+
+cleanup() {
+    local pid
+    for pid in "${DBUS_PROXY_PIDS[@]}"; do
+        kill "${pid}" 2>/dev/null || true
+    done
+    if [[ -n "${DBUS_PROXY_DIR}" ]]; then
+        rm -rf "${DBUS_PROXY_DIR}"
+    fi
+}
+
+start_dbus_proxy() {
+    local bus="$1" addr="$2" sock pid
+    shift 2
+
+    if [[ -z "${DBUS_PROXY_DIR}" ]]; then
+        DBUS_PROXY_DIR="$(mktemp -d /tmp/wrap-omp-dbus.XXXXXX)"
+        trap cleanup EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM HUP
+    fi
+
+    sock="${DBUS_PROXY_DIR}/${bus}"
+    xdg-dbus-proxy "${addr}" "${sock}" --filter "$@" &
+    pid="$!"
+    DBUS_PROXY_PIDS+=("${pid}")
+
+    for _ in {1..100}; do
+        [[ -S "${sock}" ]] && return 0
+        if ! kill -0 "${pid}" 2>/dev/null; then
+            break
+        fi
+        sleep 0.05
+    done
+    echo "wrap-omp: error: dbus proxy for ${bus} bus failed to start (${addr})" >&2
+    exit 1
+}
+
+if [[ ${#DBUS_SYSTEM_ARGS[@]} -gt 0 || ${#DBUS_SESSION_ARGS[@]} -gt 0 ]]; then
+    if ! command -v xdg-dbus-proxy &>/dev/null; then
+        echo "wrap-omp: error: xdg-dbus-proxy is required for \"dbus\" config but not found on PATH" >&2
+        exit 1
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -100,6 +164,26 @@ for mnt in "${EXTRA_BIND_MOUNTS[@]}"; do
     BWRAP_ARGS+=(--bind "$mnt" "$mnt")
 done
 
+# filtered D-Bus access: proxy runs on the host, only the socket is bound in
+PROXY_SYSTEM=""
+PROXY_SESSION=""
+
+if [[ ${#DBUS_SYSTEM_ARGS[@]} -gt 0 ]]; then
+    start_dbus_proxy system \
+        "${DBUS_SYSTEM_BUS_ADDRESS:-unix:path=/run/dbus/system_bus_socket}" \
+        "${DBUS_SYSTEM_ARGS[@]}"
+    PROXY_SYSTEM="${DBUS_PROXY_DIR}/system"
+    BWRAP_ARGS+=(--ro-bind "${PROXY_SYSTEM}" "${PROXY_SYSTEM}")
+fi
+
+if [[ ${#DBUS_SESSION_ARGS[@]} -gt 0 ]]; then
+    start_dbus_proxy session \
+        "${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus}" \
+        "${DBUS_SESSION_ARGS[@]}"
+    PROXY_SESSION="${DBUS_PROXY_DIR}/session"
+    BWRAP_ARGS+=(--ro-bind "${PROXY_SESSION}" "${PROXY_SESSION}")
+fi
+
 # make sure workspace and paths needed by omp are accessible
 # workspace first, then ~/.omp on top, so .omp stays writable inside a $HOME workspace
 BWRAP_ARGS+=(
@@ -132,9 +216,17 @@ for var in "${EXTRA_ENV_VARS[@]}"; do
     fi
 done
 
+if [[ -n "${PROXY_SYSTEM}" ]]; then
+    BWRAP_ARGS+=(--setenv DBUS_SYSTEM_BUS_ADDRESS "unix:path=${PROXY_SYSTEM}")
+fi
+if [[ -n "${PROXY_SESSION}" ]]; then
+    BWRAP_ARGS+=(--setenv DBUS_SESSION_BUS_ADDRESS "unix:path=${PROXY_SESSION}")
+fi
+
 BWRAP_ARGS+=(
     --chdir "${WORKDIR}"
     "${OMP_BIN}"
 )
 
-exec bwrap "${BWRAP_ARGS[@]}" "$@"
+# no exec: the EXIT trap kills the dbus proxies and removes their socket dir
+bwrap "${BWRAP_ARGS[@]}" "$@"

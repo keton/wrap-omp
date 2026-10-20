@@ -14,6 +14,10 @@ __Note:__ This is __NOT__ a protection against malicious plugins or skills. Hack
 ## Configurable
 You can edit `~/.config/wrap-omp.conf` to add variables and files passed to the sandbox
 
+D-Bus access is off unless enabled. The `dbus` object starts a filtered
+`xdg-dbus-proxy` for the `system` and/or `session` bus and passes the policy
+arguments (`--see`, `--talk`, `--own`, `--call`, `--broadcast`) through.
+
 ## Minimalistic
 No containers, package definition scripts or other hard to configure stuff. If project builds on host it will build in sandbox.
 
