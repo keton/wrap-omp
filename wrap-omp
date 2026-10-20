@@ -18,7 +18,6 @@ set -euo pipefail
 OMP_BIN="${OMP_BIN:-omp}"
 WORKDIR="${WORKDIR:-$(pwd)}"
 WORKDIR="$(cd "$WORKDIR" && pwd -P)"
-HOME_REAL="$(cd "${HOME}" && pwd -P)"
 
 # ---------------------------------------------------------------------------
 # Prerequisite checks
@@ -108,10 +107,9 @@ BWRAP_ARGS+=(
     --ro-bind "${HOME}/.bun" "${HOME}/.bun"
 )
 
-if [[ "${WORKDIR}" == "${HOME_REAL}" ]]; then
-    # never expose the user's home as writeable
-    BWRAP_ARGS+=(--ro-bind "${WORKDIR}" "${WORKDIR}")
-else
+# homedir special case: expose only files explicitly mounted in config file
+# $HOME is writeable but uses tmpfs overlaid with actual files
+if [[ "${WORKDIR}" != "${HOME}" ]]; then
     BWRAP_ARGS+=(--bind "${WORKDIR}" "${WORKDIR}")
 fi
 
