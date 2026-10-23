@@ -25,6 +25,7 @@ set -euo pipefail
 OMP_BIN="${OMP_BIN:-omp}"
 WORKDIR="${WORKDIR:-$(pwd)}"
 WORKDIR="$(cd "$WORKDIR" && pwd -P)"
+HOME_REAL="$(cd "${HOME}" && pwd -P)"
 
 # ---------------------------------------------------------------------------
 # Prerequisite checks
@@ -318,7 +319,7 @@ done
 
 # homedir special case: expose only files explicitly mounted in config file
 # $HOME is writeable but uses tmpfs overlaid with actual files
-if [[ "${WORKDIR}" != "${HOME}" ]]; then
+if [[ "${WORKDIR}" != "${HOME_REAL}" ]]; then
     BWRAP_ARGS+=(--bind "${WORKDIR}" "${WORKDIR}")
 fi
 
