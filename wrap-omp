@@ -253,6 +253,8 @@ mirror_node() {
 BWRAP_ARGS=(
     --unshare-all
     --share-net
+    # cleanup runs from an EXIT trap, which SIGKILL skips; never outlive it
+    --die-with-parent
     --dev /dev
     --proc /proc
     --ro-bind /usr /usr
