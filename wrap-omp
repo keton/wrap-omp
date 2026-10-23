@@ -26,6 +26,7 @@ OMP_BIN="${OMP_BIN:-omp}"
 WORKDIR="${WORKDIR:-$(pwd)}"
 WORKDIR="$(cd "$WORKDIR" && pwd -P)"
 HOME_REAL="$(cd "${HOME}" && pwd -P)"
+USER="${USER:-$(id -un)}" # cron, systemd and docker do not always export USER
 
 # ---------------------------------------------------------------------------
 # Prerequisite checks
