@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+# wl-paste replacement for the sandbox: serves image/png from the host
+# clipboard broker. Text and every other MIME type look like an empty
+# clipboard, because the sandbox has no Wayland access.
+import os
+import socket
+import sys
+
+
+def main():
+    args = sys.argv[1:]
+    if "--list-types" in args or "-l" in args:
+        sys.stdout.write("image/png\n")
+        return 0
+
+    mime = None
+    for i, arg in enumerate(args):
+        if arg in ("--type", "-t") and i + 1 < len(args):
+            mime = args[i + 1]
+        elif arg.startswith("--type="):
+            mime = arg.split("=", 1)[1]
+    if mime != "image/png":
+        return 1
+
+    broker = os.environ.get("OMP_CLIP_BROKER")
+    if not broker:
+        return 1
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as sock:
+            sock.connect(broker)
+            while chunk := sock.recv(1 << 20):
+                sys.stdout.buffer.write(chunk)
+    except OSError:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

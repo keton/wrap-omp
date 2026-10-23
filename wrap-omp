@@ -15,6 +15,10 @@
 #   "dbus"               — per-bus xdg-dbus-proxy policy args, e.g.
 #                          {"system": ["--talk=org.bluez"]}; without an entry
 #                          the sandbox has no access to that bus
+#   "clipboard_bridge"   — true to serve image/png from the host Wayland
+#                          clipboard through a read-only host-side broker
+#                          (requires omp-clip-shim and omp-clip-broker next
+#                          to this script; no Wayland socket enters the sandbox)
 
 set -euo pipefail
 
@@ -43,6 +47,7 @@ EXTRA_BIND_MOUNTS=()
 EXTRA_RO_MOUNTS=()
 DBUS_SYSTEM_ARGS=()
 DBUS_SESSION_ARGS=()
+CLIP_BRIDGE=false
 
 OMP_CONF=""
 for dir in "${HOME}/.config" "${HOME}"; do
@@ -80,6 +85,10 @@ if [[ -n "${OMP_CONF}" ]]; then
     while IFS= read -r a; do
         [[ -n "$a" ]] && DBUS_SESSION_ARGS+=("$a")
     done < <(echo "$CLEAN" | jq -r '.dbus.session[]? // empty')
+
+    if [[ "$(echo "$CLEAN" | jq -r '.clipboard_bridge // false')" == "true" ]]; then
+        CLIP_BRIDGE=true
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -88,14 +97,35 @@ fi
 # ---------------------------------------------------------------------------
 DBUS_PROXY_DIR=""
 DBUS_PROXY_PIDS=()
+CLIP_DIR=""
+CLIP_PID=""
+CLIP_SHIM=""
+CLIP_BROKER=""
+CLIP_WL=""
+CLEANUP_ARMED=""
 
 cleanup() {
     local pid
     for pid in "${DBUS_PROXY_PIDS[@]}"; do
         kill "${pid}" 2>/dev/null || true
     done
+    if [[ -n "${CLIP_PID}" ]]; then
+        kill "${CLIP_PID}" 2>/dev/null || true
+    fi
     if [[ -n "${DBUS_PROXY_DIR}" ]]; then
         rm -rf "${DBUS_PROXY_DIR}"
+    fi
+    if [[ -n "${CLIP_DIR}" ]]; then
+        rm -rf "${CLIP_DIR}"
+    fi
+}
+
+ensure_cleanup() {
+    if [[ -z "${CLEANUP_ARMED}" ]]; then
+        CLEANUP_ARMED=1
+        trap cleanup EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM HUP
     fi
 }
 
@@ -105,9 +135,7 @@ start_dbus_proxy() {
 
     if [[ -z "${DBUS_PROXY_DIR}" ]]; then
         DBUS_PROXY_DIR="$(mktemp -d /tmp/wrap-omp-dbus.XXXXXX)"
-        trap cleanup EXIT
-        trap 'exit 130' INT
-        trap 'exit 143' TERM HUP
+        ensure_cleanup
     fi
 
     sock="${DBUS_PROXY_DIR}/${bus}"
@@ -123,6 +151,49 @@ start_dbus_proxy() {
         sleep 0.05
     done
     echo "wrap-omp: error: dbus proxy for ${bus} bus failed to start (${addr})" >&2
+    exit 1
+}
+
+start_clip_broker() {
+    local self_dir
+    self_dir="$(dirname "$(readlink -f "$0")")"
+    CLIP_SHIM="${self_dir}/omp-clip-shim"
+    CLIP_BROKER="${self_dir}/omp-clip-broker"
+
+    if ! command -v python3 &>/dev/null; then
+        echo "wrap-omp: error: python3 is required for \"clipboard_bridge\"" >&2
+        exit 1
+    fi
+
+    CLIP_WL="$(command -v wl-paste || true)"
+    if [[ "${CLIP_WL}" != /* ]]; then
+        echo "wrap-omp: error: \"clipboard_bridge\" requires wl-paste on PATH" >&2
+        exit 1
+    fi
+
+    if [[ ! -x "${CLIP_SHIM}" || ! -f "${CLIP_BROKER}" ]]; then
+        echo "wrap-omp: error: ${CLIP_SHIM} and ${CLIP_BROKER} must be installed next to wrap-omp" >&2
+        exit 1
+    fi
+
+    if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
+        echo "wrap-omp: warning: \"clipboard_bridge\" is enabled but the host has no WAYLAND_DISPLAY" >&2
+    fi
+
+    CLIP_DIR="$(mktemp -d /tmp/wrap-omp-clip.XXXXXX)"
+    ensure_cleanup
+
+    python3 "${CLIP_BROKER}" "${CLIP_DIR}/broker.sock" "${CLIP_WL}" &
+    CLIP_PID=$!
+
+    for _ in {1..100}; do
+        [[ -S "${CLIP_DIR}/broker.sock" ]] && return 0
+        if ! kill -0 "${CLIP_PID}" 2>/dev/null; then
+            break
+        fi
+        sleep 0.05
+    done
+    echo "wrap-omp: error: clipboard broker failed to start" >&2
     exit 1
 }
 
@@ -184,6 +255,10 @@ if [[ ${#DBUS_SESSION_ARGS[@]} -gt 0 ]]; then
     BWRAP_ARGS+=(--ro-bind "${PROXY_SESSION}" "${PROXY_SESSION}")
 fi
 
+if [[ "${CLIP_BRIDGE}" == true ]]; then
+    start_clip_broker
+fi
+
 # make sure workspace and paths needed by omp are accessible
 # workspace first, then ~/.omp on top, so .omp stays writable inside a $HOME workspace
 BWRAP_ARGS+=(
@@ -198,6 +273,15 @@ if [[ "${WORKDIR}" != "${HOME}" ]]; then
 fi
 
 BWRAP_ARGS+=(--bind "${HOME}/.omp" "${HOME}/.omp")
+
+# clipboard bridge: shim replaces wl-paste, socket dir is the only host object
+# visible to it. Mounted last so no earlier mount can shadow the shim.
+if [[ -n "${CLIP_DIR}" ]]; then
+    BWRAP_ARGS+=(
+        --ro-bind "${CLIP_SHIM}" "${CLIP_WL}"
+        --ro-bind "${CLIP_DIR}" "${CLIP_DIR}"
+    )
+fi
 
 BWRAP_ARGS+=(
     --clearenv
@@ -223,10 +307,18 @@ if [[ -n "${PROXY_SESSION}" ]]; then
     BWRAP_ARGS+=(--setenv DBUS_SESSION_BUS_ADDRESS "unix:path=${PROXY_SESSION}")
 fi
 
+if [[ -n "${CLIP_DIR}" ]]; then
+    BWRAP_ARGS+=(
+        --setenv OMP_CLIP_BROKER "${CLIP_DIR}/broker.sock"
+        --setenv WAYLAND_DISPLAY "omp-clip-broker" # non-empty only; omp gates its wl-paste path on it
+    )
+fi
+
 BWRAP_ARGS+=(
     --chdir "${WORKDIR}"
     "${OMP_BIN}"
 )
 
-# no exec: the EXIT trap kills the dbus proxies and removes their socket dir
+# no exec: the EXIT trap kills the dbus proxies and clipboard broker and
+# removes their socket dirs
 bwrap "${BWRAP_ARGS[@]}" "$@"

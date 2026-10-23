@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+# Host-side clipboard broker for omp-clip-shim. One connection is one
+# image/png read; no request bytes are parsed and no MIME type or path comes
+# from the sandbox. The socket is SOCK_SEQPACKET so a SOCK_STREAM Wayland
+# client fails at connect() with EPROTOTYPE instead of reading PNG bytes.
+import os
+import socket
+import subprocess
+import sys
+
+MAX_BYTES = 32 << 20
+CHUNK = 64 << 10
+READ_TIMEOUT = 1.5
+
+
+def main():
+    sock_path = sys.argv[1]
+    wl_paste = sys.argv[2]
+
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    srv.bind(sock_path)
+    os.chmod(sock_path, 0o600)
+    srv.listen(8)
+
+    while True:
+        conn, _ = srv.accept()
+        conn.settimeout(2)
+        try:
+            run = subprocess.run(
+                [wl_paste, "--type", "image/png"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=READ_TIMEOUT,
+            )
+            data = run.stdout
+            if run.returncode == 0 and 0 < len(data) <= MAX_BYTES:
+                for offset in range(0, len(data), CHUNK):
+                    conn.sendall(data[offset : offset + CHUNK])
+        except (OSError, subprocess.SubprocessError):
+            pass
+        finally:
+            conn.close()
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        pass

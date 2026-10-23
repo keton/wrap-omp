@@ -18,6 +18,21 @@ D-Bus access is off unless enabled. The `dbus` object starts a filtered
 `xdg-dbus-proxy` for the `system` and/or `session` bus and passes the policy
 arguments (`--see`, `--talk`, `--own`, `--call`, `--broadcast`) through.
 
+Image clipboard access is off unless `"clipboard_bridge": true`. `wrap-omp`
+then starts `omp-clip-broker` on the host and binds only its socket and the
+`omp-clip-shim` script into the sandbox (`omp-clip-shim` replaces `wl-paste`).
+The broker serves exactly one thing — the current `image/png` from the host
+Wayland clipboard, capped at 32 MiB. There is no request protocol, no MIME
+argument, no `SET_PNG`, and no clipboard text; the sandbox never gets a Wayland
+socket or `XDG_RUNTIME_DIR`. Copying *out* keeps working through OSC 52 in the
+terminal. Text paste via `ctrl+v` stays unavailable; use the terminal's own
+paste.
+
+The broker socket is `SOCK_SEQPACKET`, so a normal Wayland client
+(`SOCK_STREAM`) pointed at it fails at `connect()` with `EPROTOTYPE` and exits
+cleanly. Either way the sandbox has no compositor, so the clip directory is not
+a Wayland endpoint.
+
 ## Minimalistic
 No containers, package definition scripts or other hard to configure stuff. If project builds on host it will build in sandbox.
 
@@ -25,7 +40,9 @@ Just a read only copy of your system intended to prevent agent from installing p
 
 # Usage
 ## Installation
-- copy wrap-omp to your executable path. For example `cp wrap-omp ~/.local/bin`
+- copy `wrap-omp`, `omp-clip-shim` and `omp-clip-broker` to your executable
+  path. For example `cp wrap-omp omp-clip-shim omp-clip-broker ~/.local/bin`
+  (the shim and broker must sit next to `wrap-omp`)
 - copy config template and adapt it for your needs: `cp wrap-omp.conf.template ~/.config/wrap-omp.conf`
 
 ## Running

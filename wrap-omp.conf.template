@@ -32,5 +32,10 @@
     "dbus": {
         "system": [],
         "session": []
-    }
+    },
+    // image clipboard bridge: serve image/png from the host Wayland clipboard
+    // through a read-only host-side broker. No Wayland socket enters the
+    // sandbox, and clipboard text is never exposed. Requires omp-clip-shim and
+    // omp-clip-broker installed next to wrap-omp and wl-clipboard on the host.
+    "clipboard_bridge": false
 }
