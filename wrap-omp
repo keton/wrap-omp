@@ -287,21 +287,29 @@ done
 PROXY_SYSTEM=""
 PROXY_SESSION=""
 
-if [[ ${#DBUS_SYSTEM_ARGS[@]} -gt 0 ]]; then
-    start_dbus_proxy system \
-        "${DBUS_SYSTEM_BUS_ADDRESS:-unix:path=/run/dbus/system_bus_socket}" \
-        "${DBUS_SYSTEM_ARGS[@]}"
-    PROXY_SYSTEM="${DBUS_PROXY_DIR}/system"
-    BWRAP_ARGS+=(--ro-bind "${PROXY_SYSTEM}" "${PROXY_SYSTEM}")
-fi
-
-if [[ ${#DBUS_SESSION_ARGS[@]} -gt 0 ]]; then
-    start_dbus_proxy session \
-        "${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus}" \
-        "${DBUS_SESSION_ARGS[@]}"
-    PROXY_SESSION="${DBUS_PROXY_DIR}/session"
-    BWRAP_ARGS+=(--ro-bind "${PROXY_SESSION}" "${PROXY_SESSION}")
-fi
+for bus in system session; do
+    case "${bus}" in
+        system)
+            args=("${DBUS_SYSTEM_ARGS[@]}")
+            addr="${DBUS_SYSTEM_BUS_ADDRESS:-unix:path=/run/dbus/system_bus_socket}"
+            ;;
+        session)
+            args=("${DBUS_SESSION_ARGS[@]}")
+            addr="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus}"
+            ;;
+    esac
+    if [[ ${#args[@]} -eq 0 ]]; then
+        continue
+    fi
+    start_dbus_proxy "${bus}" "${addr}" "${args[@]}"
+    sock="${DBUS_PROXY_DIR}/${bus}"
+    BWRAP_ARGS+=(--ro-bind "${sock}" "${sock}")
+    if [[ "${bus}" == system ]]; then
+        PROXY_SYSTEM="${sock}"
+    else
+        PROXY_SESSION="${sock}"
+    fi
+done
 
 if [[ "${CLIP_BRIDGE}" == true ]]; then
     start_clip_broker
