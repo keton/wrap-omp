@@ -322,10 +322,16 @@ fi
 # workspace first, then ~/.omp on top, so .omp stays writable inside a $HOME workspace
 mkdir -p "${HOME}/.omp"
 
-# homedir special case: expose only files explicitly mounted in config file
-# $HOME is writeable but uses tmpfs overlaid with actual files
-if [[ "${WORKDIR}" != "${HOME_REAL}" ]]; then
+# only a workspace inside $HOME is exposed; $HOME itself and anything outside
+# it stay unmounted and omp starts in the sandbox home
+if [[ "${WORKDIR}" == "${HOME_REAL}"/* ]]; then
     BWRAP_ARGS+=(--bind "${WORKDIR}" "${WORKDIR}")
+    SANDBOX_CWD="${WORKDIR}"
+else
+    SANDBOX_CWD="${HOME}"
+    if [[ "${WORKDIR}" != "${HOME_REAL}" ]]; then
+        echo "wrap-omp: warning: ${WORKDIR} is outside ${HOME}; workspace not mounted" >&2
+    fi
 fi
 
 BWRAP_ARGS+=(--bind "${HOME}/.omp" "${HOME}/.omp")
@@ -371,7 +377,7 @@ if [[ -n "${CLIP_DIR}" ]]; then
 fi
 
 BWRAP_ARGS+=(
-    --chdir "${WORKDIR}"
+    --chdir "${SANDBOX_CWD}"
     "${OMP_BIN}"
 )
 

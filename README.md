@@ -7,9 +7,10 @@ __Note:__ This is __NOT__ a protection against malicious plugins or skills. Hack
 ## Sandbox boundary
 - filesystem is a blank tmpfs with critical folders mounted __read only__
 - minimal set of files required for oh-my-pi to function
-- only `~/.omp` and workspace folder (`$PWD` by default) are writeable
-- when the workspace is `$HOME`, it is not mounted at all; the sandbox home is
-  empty except `~/.omp` (writeable) and the read-only `~/.local` / `~/.bun` mounts
+- only `~/.omp` and a workspace inside `$HOME` are writeable (`$PWD` by default)
+- when the workspace is `$HOME` or outside it, nothing of it is mounted: omp
+  starts in the sandbox home, which holds only `~/.omp` (writeable) and the
+  read-only `~/.local` / `~/.bun` mounts
 - host environment variables are not passed to the sandbox
 
 ## Configurable
