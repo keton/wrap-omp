@@ -205,6 +205,40 @@ if [[ ${#DBUS_SYSTEM_ARGS[@]} -gt 0 || ${#DBUS_SESSION_ARGS[@]} -gt 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Host filesystem shape
+# Don't hardcode Fedora's usr-merge flavor. Recreate what the host has: a
+# top-level bin/sbin/lib/lib64 that is a symlink stays a symlink (its target
+# lives under the already mounted /usr); a real split directory is bound
+# read-only. Fedora maps /lib64 -> usr/lib64, Arch maps it to usr/lib, Gentoo
+# and Alpine <= 3.22 keep real directories.
+# ---------------------------------------------------------------------------
+EXPOSED_ROOTS=(/usr /etc)
+
+covered_by_exposed_root() {
+    local p="$1" r
+    for r in "${EXPOSED_ROOTS[@]}"; do
+        [[ "$p" == "$r" || "$p" == "$r"/* ]] && return 0
+    done
+    return 1
+}
+
+mirror_node() {
+    local p="$1" target
+    if [[ -L "$p" ]]; then
+        BWRAP_ARGS+=(--symlink "$(readlink "$p")" "$p")
+        # shortcut: canonical target; a link whose target path crosses another
+        # symlinked directory needs that hop replicated manually
+        target="$(readlink -f "$p" || true)"
+        if [[ -e "$target" ]] && ! covered_by_exposed_root "$target"; then
+            BWRAP_ARGS+=(--ro-bind "$target" "$target")
+            EXPOSED_ROOTS+=("$target")
+        fi
+    elif [[ -e "$p" ]]; then
+        BWRAP_ARGS+=(--ro-bind "$p" "$p")
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Build bwrap argument array
 # bwrap flag order is significant: mounts stack left-to-right on a fresh tmpfs.
 #
@@ -217,14 +251,23 @@ BWRAP_ARGS=(
     --proc /proc
     --ro-bind /usr /usr
     --ro-bind /etc /etc
-    --ro-bind /run/systemd/resolve/stub-resolv.conf /run/systemd/resolve/stub-resolv.conf
-    --symlink usr/bin /bin
-    --symlink usr/lib /lib
-    --symlink usr/lib64 /lib64
-    --symlink usr/sbin /sbin
     --dir "/tmp"
     --dir "${HOME}"
 )
+
+# /etc/resolv.conf is normally a link into /run (systemd-resolved, resolvconf,
+# NetworkManager). The link arrives with /etc; only its target must be
+# reachable, since bwrap refuses to mount over an existing symlink. A plain
+# file needs nothing.
+if [[ -L /etc/resolv.conf && -e /etc/resolv.conf ]]; then
+    resolv="$(readlink -f /etc/resolv.conf)"
+    covered_by_exposed_root "$resolv" ||
+        BWRAP_ARGS+=(--ro-bind "$resolv" "$resolv")
+fi
+
+for node in /bin /sbin /lib /lib64 /lib32 /libx32; do
+    mirror_node "$node"
+done
 
 # append mounts form config file
 for mnt in "${EXTRA_RO_MOUNTS[@]}"; do
