@@ -309,10 +309,12 @@ fi
 
 # make sure workspace and paths needed by omp are accessible
 # workspace first, then ~/.omp on top, so .omp stays writable inside a $HOME workspace
-BWRAP_ARGS+=(
-    --ro-bind "${HOME}/.local" "${HOME}/.local"
-    --ro-bind "${HOME}/.bun" "${HOME}/.bun"
-)
+mkdir -p "${HOME}/.omp"
+for d in "${HOME}/.local" "${HOME}/.bun"; do
+    if [[ -d "${d}" ]]; then
+        BWRAP_ARGS+=(--ro-bind "${d}" "${d}")
+    fi
+done
 
 # homedir special case: expose only files explicitly mounted in config file
 # $HOME is writeable but uses tmpfs overlaid with actual files
