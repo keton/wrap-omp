@@ -64,7 +64,9 @@ if [[ -n "${OMP_CONF}" ]]; then
         exit 1
     fi
 
-    # Strip // comments, then extract arrays with jq
+    # Strip // comments, then read every value in one jq pass as
+    # "key<TAB>value<NUL>" records.
+    # shortcut: "//" inside a string is stripped too, so values must not contain it
     CLEAN="$(sed 's|//.*$||' "${OMP_CONF}")"
 
     if ! printf '%s' "$CLEAN" | jq empty 2>/dev/null; then
@@ -72,29 +74,24 @@ if [[ -n "${OMP_CONF}" ]]; then
         exit 1
     fi
 
-    while IFS= read -r var; do
-        [[ -n "$var" ]] && EXTRA_ENV_VARS+=("$var")
-    done < <(echo "$CLEAN" | jq -r '.env[]? // empty')
-
-    while IFS= read -r p; do
-        [[ -n "$p" ]] && EXTRA_BIND_MOUNTS+=("${p/#\~/$HOME}")
-    done < <(echo "$CLEAN" | jq -r '.writeable_mounts[]? // empty')
-
-    while IFS= read -r p; do
-        [[ -n "$p" ]] && EXTRA_RO_MOUNTS+=("${p/#\~/$HOME}")
-    done < <(echo "$CLEAN" | jq -r '.read_only_mounts[]? // empty')
-
-    while IFS= read -r a; do
-        [[ -n "$a" ]] && DBUS_SYSTEM_ARGS+=("$a")
-    done < <(echo "$CLEAN" | jq -r '.dbus.system[]? // empty')
-
-    while IFS= read -r a; do
-        [[ -n "$a" ]] && DBUS_SESSION_ARGS+=("$a")
-    done < <(echo "$CLEAN" | jq -r '.dbus.session[]? // empty')
-
-    if [[ "$(echo "$CLEAN" | jq -r '.clipboard_bridge // false')" == "true" ]]; then
-        CLIP_BRIDGE=true
-    fi
+    while IFS=$'\t' read -r -d '' key val; do
+        case "${key}" in
+            env) EXTRA_ENV_VARS+=("${val}") ;;
+            rw) EXTRA_BIND_MOUNTS+=("${val/#\~/$HOME}") ;;
+            ro) EXTRA_RO_MOUNTS+=("${val/#\~/$HOME}") ;;
+            dbus-system) DBUS_SYSTEM_ARGS+=("${val}") ;;
+            dbus-session) DBUS_SESSION_ARGS+=("${val}") ;;
+            clip) CLIP_BRIDGE=true ;;
+        esac
+    done < <(printf '%s' "$CLEAN" | jq -j '
+        def emit($k): .[]? | select(. != "") | "\($k)\t\(.)\u0000";
+        ((.env // []) | emit("env")),
+        ((.writeable_mounts // []) | emit("rw")),
+        ((.read_only_mounts // []) | emit("ro")),
+        ((.dbus.system // []) | emit("dbus-system")),
+        ((.dbus.session // []) | emit("dbus-session")),
+        (if (.clipboard_bridge // false) == true then "clip\t\u0000" else empty end)
+    ')
 fi
 
 # ---------------------------------------------------------------------------
