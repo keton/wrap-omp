@@ -1,5 +1,5 @@
 {
-    // wrap-omp config. Install as ~/.config/wrap.config
+    // wrap-omp config. Install as ~/.config/wrap-omp.conf
     // host environment variables to pass into sandbox (good for API keys)
     "env": [
         "SOME_API_KEY"
