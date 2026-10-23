@@ -135,6 +135,19 @@ ensure_cleanup() {
     fi
 }
 
+wait_for_socket() {
+    local sock="$1" pid="$2" what="$3"
+    for _ in {1..100}; do
+        [[ -S "${sock}" ]] && return 0
+        if ! kill -0 "${pid}" 2>/dev/null; then
+            break
+        fi
+        sleep 0.05
+    done
+    echo "wrap-omp: error: ${what} failed to start" >&2
+    exit 1
+}
+
 start_dbus_proxy() {
     local bus="$1" addr="$2" sock pid
     shift 2
@@ -149,15 +162,7 @@ start_dbus_proxy() {
     pid="$!"
     DBUS_PROXY_PIDS+=("${pid}")
 
-    for _ in {1..100}; do
-        [[ -S "${sock}" ]] && return 0
-        if ! kill -0 "${pid}" 2>/dev/null; then
-            break
-        fi
-        sleep 0.05
-    done
-    echo "wrap-omp: error: dbus proxy for ${bus} bus failed to start (${addr})" >&2
-    exit 1
+    wait_for_socket "${sock}" "${pid}" "dbus proxy for ${bus} bus (${addr})"
 }
 
 start_clip_broker() {
@@ -192,15 +197,7 @@ start_clip_broker() {
     python3 "${CLIP_BROKER}" "${CLIP_DIR}/broker.sock" "${CLIP_WL}" &
     CLIP_PID=$!
 
-    for _ in {1..100}; do
-        [[ -S "${CLIP_DIR}/broker.sock" ]] && return 0
-        if ! kill -0 "${CLIP_PID}" 2>/dev/null; then
-            break
-        fi
-        sleep 0.05
-    done
-    echo "wrap-omp: error: clipboard broker failed to start" >&2
-    exit 1
+    wait_for_socket "${CLIP_DIR}/broker.sock" "${CLIP_PID}" "clipboard broker"
 }
 
 if [[ ${#DBUS_SYSTEM_ARGS[@]} -gt 0 || ${#DBUS_SESSION_ARGS[@]} -gt 0 ]]; then
