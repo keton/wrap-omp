@@ -99,6 +99,7 @@ fi
 # into the sandbox. Concurrent wrap-omp runs get separate mktemp dirs.
 # ---------------------------------------------------------------------------
 BWRAP_PID=""
+WATCHDOG_PID=""
 DBUS_PROXY_DIR=""
 DBUS_PROXY_PIDS=()
 CLIP_DIR=""
@@ -109,6 +110,9 @@ CLIP_WL=""
 
 cleanup() {
     local pid
+    if [[ -n "${WATCHDOG_PID}" ]]; then
+        kill "${WATCHDOG_PID}" 2>/dev/null || true
+    fi
     if [[ -n "${BWRAP_PID}" ]]; then
         kill "${BWRAP_PID}" 2>/dev/null || true
     fi
@@ -141,6 +145,30 @@ wait_for_socket() {
     done
     echo "wrap-omp: error: ${what} failed to start" >&2
     exit 1
+}
+
+# SIGKILL of this script skips the EXIT trap. The watcher is not a target when
+# only this pid is killed, so it stops the helpers and removes their dirs after
+# the fact. cleanup() kills it on every other exit path.
+process_alive() {
+    local stat
+    read -r stat 2>/dev/null < "/proc/$1/stat" || return 1
+    stat="${stat#*) }" # comm is parenthesised and may contain spaces
+    [[ "${stat:0:1}" != [ZX] ]]
+}
+
+start_watchdog() {
+    local parent="$$" pid
+    (
+        while process_alive "${parent}"; do
+            sleep 0.5
+        done
+        for pid in "${HELPER_PIDS[@]}"; do
+            kill "${pid}" 2>/dev/null || true
+        done
+        rm -rf "${DBUS_PROXY_DIR}" "${CLIP_DIR}"
+    ) </dev/null >/dev/null 2>&1 &
+    WATCHDOG_PID=$!
 }
 
 start_dbus_proxy() {
@@ -378,6 +406,14 @@ BWRAP_ARGS+=(
     --chdir "${SANDBOX_CWD}"
     "${OMP_BIN}"
 )
+
+if [[ ${#DBUS_PROXY_PIDS[@]} -gt 0 || -n "${CLIP_DIR}" ]]; then
+    HELPER_PIDS=("${DBUS_PROXY_PIDS[@]}")
+    if [[ -n "${CLIP_PID}" ]]; then
+        HELPER_PIDS+=("${CLIP_PID}")
+    fi
+    start_watchdog
+fi
 
 # Run bwrap in the background: a trapped signal interrupts `wait` at once,
 # while a foreground child would defer the trap until the sandbox exited on
