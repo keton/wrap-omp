@@ -419,6 +419,8 @@ fi
 # while a foreground child would defer the trap until the sandbox exited on
 # its own. cleanup() stops bwrap; --die-with-parent covers a SIGKILL of this
 # script.
-bwrap "${BWRAP_ARGS[@]}" "$@" &
+# `<&0` is required: a non-interactive shell points an async command's stdin
+# at /dev/null, and omp is a terminal program.
+bwrap "${BWRAP_ARGS[@]}" "$@" <&0 &
 BWRAP_PID=$!
 wait "${BWRAP_PID}"
