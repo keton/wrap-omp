@@ -10,7 +10,7 @@ import sys
 
 MAX_BYTES = 32 << 20
 CHUNK = 64 << 10
-READ_TIMEOUT = 1.5
+READ_TIMEOUT = 5.0
 
 
 def main():
