@@ -98,6 +98,7 @@ fi
 # D-Bus proxies: one filtered xdg-dbus-proxy per configured bus, socket bound
 # into the sandbox. Concurrent wrap-omp runs get separate mktemp dirs.
 # ---------------------------------------------------------------------------
+BWRAP_PID=""
 DBUS_PROXY_DIR=""
 DBUS_PROXY_PIDS=()
 CLIP_DIR=""
@@ -108,6 +109,9 @@ CLIP_WL=""
 
 cleanup() {
     local pid
+    if [[ -n "${BWRAP_PID}" ]]; then
+        kill "${BWRAP_PID}" 2>/dev/null || true
+    fi
     for pid in "${DBUS_PROXY_PIDS[@]}"; do
         kill "${pid}" 2>/dev/null || true
     done
@@ -375,6 +379,10 @@ BWRAP_ARGS+=(
     "${OMP_BIN}"
 )
 
-# no exec: the EXIT trap kills the dbus proxies and clipboard broker and
-# removes their socket dirs
-bwrap "${BWRAP_ARGS[@]}" "$@"
+# Run bwrap in the background: a trapped signal interrupts `wait` at once,
+# while a foreground child would defer the trap until the sandbox exited on
+# its own. cleanup() stops bwrap; --die-with-parent covers a SIGKILL of this
+# script.
+bwrap "${BWRAP_ARGS[@]}" "$@" &
+BWRAP_PID=$!
+wait "${BWRAP_PID}"
