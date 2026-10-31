@@ -25,6 +25,8 @@ set -euo pipefail
 OMP_BIN="${OMP_BIN:-omp}"
 WORKDIR="${WORKDIR:-$(pwd)}"
 WORKDIR="$(cd "$WORKDIR" && pwd -P)"
+HOME_REAL="$(cd "${HOME}" && pwd -P)"
+USER="${USER:-$(id -un)}" # cron, systemd and docker do not always export USER
 
 # ---------------------------------------------------------------------------
 # Prerequisite checks
@@ -63,38 +65,42 @@ if [[ -n "${OMP_CONF}" ]]; then
         exit 1
     fi
 
-    # Strip // comments, then extract arrays with jq
+    # Strip // comments, then read every value in one jq pass as
+    # "key<TAB>value<NUL>" records.
+    # shortcut: "//" inside a string is stripped too, so values must not contain it
     CLEAN="$(sed 's|//.*$||' "${OMP_CONF}")"
 
-    while IFS= read -r var; do
-        [[ -n "$var" ]] && EXTRA_ENV_VARS+=("$var")
-    done < <(echo "$CLEAN" | jq -r '.env[]? // empty')
-
-    while IFS= read -r p; do
-        [[ -n "$p" ]] && EXTRA_BIND_MOUNTS+=("${p/#\~/$HOME}")
-    done < <(echo "$CLEAN" | jq -r '.writeable_mounts[]? // empty')
-
-    while IFS= read -r p; do
-        [[ -n "$p" ]] && EXTRA_RO_MOUNTS+=("${p/#\~/$HOME}")
-    done < <(echo "$CLEAN" | jq -r '.read_only_mounts[]? // empty')
-
-    while IFS= read -r a; do
-        [[ -n "$a" ]] && DBUS_SYSTEM_ARGS+=("$a")
-    done < <(echo "$CLEAN" | jq -r '.dbus.system[]? // empty')
-
-    while IFS= read -r a; do
-        [[ -n "$a" ]] && DBUS_SESSION_ARGS+=("$a")
-    done < <(echo "$CLEAN" | jq -r '.dbus.session[]? // empty')
-
-    if [[ "$(echo "$CLEAN" | jq -r '.clipboard_bridge // false')" == "true" ]]; then
-        CLIP_BRIDGE=true
+    if ! printf '%s' "$CLEAN" | jq empty 2>/dev/null; then
+        echo "wrap-omp: error: invalid JSON in ${OMP_CONF}" >&2
+        exit 1
     fi
+
+    while IFS=$'\t' read -r -d '' key val; do
+        case "${key}" in
+            env) EXTRA_ENV_VARS+=("${val}") ;;
+            rw) EXTRA_BIND_MOUNTS+=("${val/#\~/$HOME}") ;;
+            ro) EXTRA_RO_MOUNTS+=("${val/#\~/$HOME}") ;;
+            dbus-system) DBUS_SYSTEM_ARGS+=("${val}") ;;
+            dbus-session) DBUS_SESSION_ARGS+=("${val}") ;;
+            clip) CLIP_BRIDGE=true ;;
+        esac
+    done < <(printf '%s' "$CLEAN" | jq -j '
+        def emit($k): .[]? | select(. != "") | "\($k)\t\(.)\u0000";
+        ((.env // []) | emit("env")),
+        ((.writeable_mounts // []) | emit("rw")),
+        ((.read_only_mounts // []) | emit("ro")),
+        ((.dbus.system // []) | emit("dbus-system")),
+        ((.dbus.session // []) | emit("dbus-session")),
+        (if (.clipboard_bridge // false) == true then "clip\t\u0000" else empty end)
+    ')
 fi
 
 # ---------------------------------------------------------------------------
 # D-Bus proxies: one filtered xdg-dbus-proxy per configured bus, socket bound
 # into the sandbox. Concurrent wrap-omp runs get separate mktemp dirs.
 # ---------------------------------------------------------------------------
+BWRAP_PID=""
+WATCHDOG_PID=""
 DBUS_PROXY_DIR=""
 DBUS_PROXY_PIDS=()
 CLIP_DIR=""
@@ -102,10 +108,15 @@ CLIP_PID=""
 CLIP_SHIM=""
 CLIP_BROKER=""
 CLIP_WL=""
-CLEANUP_ARMED=""
 
 cleanup() {
     local pid
+    if [[ -n "${WATCHDOG_PID}" ]]; then
+        kill "${WATCHDOG_PID}" 2>/dev/null || true
+    fi
+    if [[ -n "${BWRAP_PID}" ]]; then
+        kill "${BWRAP_PID}" 2>/dev/null || true
+    fi
     for pid in "${DBUS_PROXY_PIDS[@]}"; do
         kill "${pid}" 2>/dev/null || true
     done
@@ -120,13 +131,45 @@ cleanup() {
     fi
 }
 
-ensure_cleanup() {
-    if [[ -z "${CLEANUP_ARMED}" ]]; then
-        CLEANUP_ARMED=1
-        trap cleanup EXIT
-        trap 'exit 130' INT
-        trap 'exit 143' TERM HUP
-    fi
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+
+wait_for_socket() {
+    local sock="$1" pid="$2" what="$3"
+    for _ in {1..100}; do
+        [[ -S "${sock}" ]] && return 0
+        if ! kill -0 "${pid}" 2>/dev/null; then
+            break
+        fi
+        sleep 0.05
+    done
+    echo "wrap-omp: error: ${what} failed to start" >&2
+    exit 1
+}
+
+# SIGKILL of this script skips the EXIT trap. The watcher is not a target when
+# only this pid is killed, so it stops the helpers and removes their dirs after
+# the fact. cleanup() kills it on every other exit path.
+process_alive() {
+    local stat
+    read -r stat 2>/dev/null < "/proc/$1/stat" || return 1
+    stat="${stat#*) }" # comm is parenthesised and may contain spaces
+    [[ "${stat:0:1}" != [ZX] ]]
+}
+
+start_watchdog() {
+    local parent="$$" pid
+    (
+        while process_alive "${parent}"; do
+            sleep 0.5
+        done
+        for pid in "${HELPER_PIDS[@]}"; do
+            kill "${pid}" 2>/dev/null || true
+        done
+        rm -rf "${DBUS_PROXY_DIR}" "${CLIP_DIR}"
+    ) </dev/null >/dev/null 2>&1 &
+    WATCHDOG_PID=$!
 }
 
 start_dbus_proxy() {
@@ -135,7 +178,6 @@ start_dbus_proxy() {
 
     if [[ -z "${DBUS_PROXY_DIR}" ]]; then
         DBUS_PROXY_DIR="$(mktemp -d /tmp/wrap-omp-dbus.XXXXXX)"
-        ensure_cleanup
     fi
 
     sock="${DBUS_PROXY_DIR}/${bus}"
@@ -143,15 +185,7 @@ start_dbus_proxy() {
     pid="$!"
     DBUS_PROXY_PIDS+=("${pid}")
 
-    for _ in {1..100}; do
-        [[ -S "${sock}" ]] && return 0
-        if ! kill -0 "${pid}" 2>/dev/null; then
-            break
-        fi
-        sleep 0.05
-    done
-    echo "wrap-omp: error: dbus proxy for ${bus} bus failed to start (${addr})" >&2
-    exit 1
+    wait_for_socket "${sock}" "${pid}" "dbus proxy for ${bus} bus (${addr})"
 }
 
 start_clip_broker() {
@@ -181,20 +215,11 @@ start_clip_broker() {
     fi
 
     CLIP_DIR="$(mktemp -d /tmp/wrap-omp-clip.XXXXXX)"
-    ensure_cleanup
 
     python3 "${CLIP_BROKER}" "${CLIP_DIR}/broker.sock" "${CLIP_WL}" &
     CLIP_PID=$!
 
-    for _ in {1..100}; do
-        [[ -S "${CLIP_DIR}/broker.sock" ]] && return 0
-        if ! kill -0 "${CLIP_PID}" 2>/dev/null; then
-            break
-        fi
-        sleep 0.05
-    done
-    echo "wrap-omp: error: clipboard broker failed to start" >&2
-    exit 1
+    wait_for_socket "${CLIP_DIR}/broker.sock" "${CLIP_PID}" "clipboard broker"
 }
 
 if [[ ${#DBUS_SYSTEM_ARGS[@]} -gt 0 || ${#DBUS_SESSION_ARGS[@]} -gt 0 ]]; then
@@ -247,6 +272,8 @@ mirror_node() {
 BWRAP_ARGS=(
     --unshare-all
     --share-net
+    # cleanup runs from an EXIT trap, which SIGKILL skips; never outlive it
+    --die-with-parent
     --dev /dev
     --proc /proc
     --ro-bind /usr /usr
@@ -269,6 +296,14 @@ for node in /bin /sbin /lib /lib64 /lib32 /libx32; do
     mirror_node "$node"
 done
 
+# read-only home directories omp needs; mounted before the config mounts so a
+# writeable_mounts entry can override one of them
+for d in "${HOME}/.local" "${HOME}/.bun"; do
+    if [[ -d "${d}" ]]; then
+        BWRAP_ARGS+=(--ro-bind "${d}" "${d}")
+    fi
+done
+
 # append mounts form config file
 for mnt in "${EXTRA_RO_MOUNTS[@]}"; do
     BWRAP_ARGS+=(--ro-bind "$mnt" "$mnt")
@@ -282,37 +317,48 @@ done
 PROXY_SYSTEM=""
 PROXY_SESSION=""
 
-if [[ ${#DBUS_SYSTEM_ARGS[@]} -gt 0 ]]; then
-    start_dbus_proxy system \
-        "${DBUS_SYSTEM_BUS_ADDRESS:-unix:path=/run/dbus/system_bus_socket}" \
-        "${DBUS_SYSTEM_ARGS[@]}"
-    PROXY_SYSTEM="${DBUS_PROXY_DIR}/system"
-    BWRAP_ARGS+=(--ro-bind "${PROXY_SYSTEM}" "${PROXY_SYSTEM}")
-fi
-
-if [[ ${#DBUS_SESSION_ARGS[@]} -gt 0 ]]; then
-    start_dbus_proxy session \
-        "${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus}" \
-        "${DBUS_SESSION_ARGS[@]}"
-    PROXY_SESSION="${DBUS_PROXY_DIR}/session"
-    BWRAP_ARGS+=(--ro-bind "${PROXY_SESSION}" "${PROXY_SESSION}")
-fi
+for bus in system session; do
+    case "${bus}" in
+        system)
+            args=("${DBUS_SYSTEM_ARGS[@]}")
+            addr="${DBUS_SYSTEM_BUS_ADDRESS:-unix:path=/run/dbus/system_bus_socket}"
+            ;;
+        session)
+            args=("${DBUS_SESSION_ARGS[@]}")
+            addr="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus}"
+            ;;
+    esac
+    if [[ ${#args[@]} -eq 0 ]]; then
+        continue
+    fi
+    start_dbus_proxy "${bus}" "${addr}" "${args[@]}"
+    sock="${DBUS_PROXY_DIR}/${bus}"
+    BWRAP_ARGS+=(--ro-bind "${sock}" "${sock}")
+    if [[ "${bus}" == system ]]; then
+        PROXY_SYSTEM="${sock}"
+    else
+        PROXY_SESSION="${sock}"
+    fi
+done
 
 if [[ "${CLIP_BRIDGE}" == true ]]; then
     start_clip_broker
 fi
 
-# make sure workspace and paths needed by omp are accessible
+# make sure the workspace and ~/.omp are accessible
 # workspace first, then ~/.omp on top, so .omp stays writable inside a $HOME workspace
-BWRAP_ARGS+=(
-    --ro-bind "${HOME}/.local" "${HOME}/.local"
-    --ro-bind "${HOME}/.bun" "${HOME}/.bun"
-)
+mkdir -p "${HOME}/.omp"
 
-# homedir special case: expose only files explicitly mounted in config file
-# $HOME is writeable but uses tmpfs overlaid with actual files
-if [[ "${WORKDIR}" != "${HOME}" ]]; then
+# only a workspace inside $HOME is exposed; $HOME itself and anything outside
+# it stay unmounted and omp starts in the sandbox home
+if [[ "${WORKDIR}" == "${HOME_REAL}"/* ]]; then
     BWRAP_ARGS+=(--bind "${WORKDIR}" "${WORKDIR}")
+    SANDBOX_CWD="${WORKDIR}"
+else
+    SANDBOX_CWD="${HOME}"
+    if [[ "${WORKDIR}" != "${HOME_REAL}" ]]; then
+        echo "wrap-omp: warning: ${WORKDIR} is outside ${HOME}; workspace not mounted" >&2
+    fi
 fi
 
 BWRAP_ARGS+=(--bind "${HOME}/.omp" "${HOME}/.omp")
@@ -358,10 +404,24 @@ if [[ -n "${CLIP_DIR}" ]]; then
 fi
 
 BWRAP_ARGS+=(
-    --chdir "${WORKDIR}"
+    --chdir "${SANDBOX_CWD}"
     "${OMP_BIN}"
 )
 
-# no exec: the EXIT trap kills the dbus proxies and clipboard broker and
-# removes their socket dirs
-bwrap "${BWRAP_ARGS[@]}" "$@"
+if [[ ${#DBUS_PROXY_PIDS[@]} -gt 0 || -n "${CLIP_DIR}" ]]; then
+    HELPER_PIDS=("${DBUS_PROXY_PIDS[@]}")
+    if [[ -n "${CLIP_PID}" ]]; then
+        HELPER_PIDS+=("${CLIP_PID}")
+    fi
+    start_watchdog
+fi
+
+# Run bwrap in the background: a trapped signal interrupts `wait` at once,
+# while a foreground child would defer the trap until the sandbox exited on
+# its own. cleanup() stops bwrap; --die-with-parent covers a SIGKILL of this
+# script.
+# `<&0` is required: a non-interactive shell points an async command's stdin
+# at /dev/null, and omp is a terminal program.
+bwrap "${BWRAP_ARGS[@]}" "$@" <&0 &
+BWRAP_PID=$!
+wait "${BWRAP_PID}"
