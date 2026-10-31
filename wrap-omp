@@ -15,10 +15,12 @@
 #   "dbus"               — per-bus xdg-dbus-proxy policy args, e.g.
 #                          {"system": ["--talk=org.bluez"]}; without an entry
 #                          the sandbox has no access to that bus
-#   "clipboard_bridge"   — true to serve image/png from the host Wayland
-#                          clipboard through a read-only host-side broker
-#                          (requires omp-clip-shim and omp-clip-broker next
-#                          to this script; no Wayland socket enters the sandbox)
+#   "clipboard_bridge"   — true to serve image/png from the host clipboard
+#                          through a read-only host-side broker. Wayland hosts
+#                          use wl-paste; WSL hosts read the Windows clipboard
+#                          with powershell.exe, so the sandbox needs neither
+#                          /mnt/c nor /run/WSL. Requires omp-clip-shim and
+#                          omp-clip-broker next to this script.
 
 set -euo pipefail
 
@@ -107,7 +109,6 @@ CLIP_DIR=""
 CLIP_PID=""
 CLIP_SHIM=""
 CLIP_BROKER=""
-CLIP_WL=""
 
 cleanup() {
     local pid
@@ -189,7 +190,7 @@ start_dbus_proxy() {
 }
 
 start_clip_broker() {
-    local self_dir
+    local self_dir mode tool what
     self_dir="$(dirname "$(readlink -f "$0")")"
     CLIP_SHIM="${self_dir}/omp-clip-shim"
     CLIP_BROKER="${self_dir}/omp-clip-broker"
@@ -199,9 +200,19 @@ start_clip_broker() {
         exit 1
     fi
 
-    CLIP_WL="$(command -v wl-paste || true)"
-    if [[ "${CLIP_WL}" != /* ]]; then
-        echo "wrap-omp: error: \"clipboard_bridge\" requires wl-paste on PATH" >&2
+    # On WSL the host runs powershell.exe through interop; the sandbox never
+    # sees /mnt/c and never runs a Windows binary itself.
+    if [[ -n "${WSL_DISTRO_NAME:-}${WSL_INTEROP:-}" ]]; then
+        mode="wsl"
+        tool="$(command -v powershell.exe || true)"
+        what="powershell.exe (WSL interop)"
+    else
+        mode="wayland"
+        tool="$(command -v wl-paste || true)"
+        what="wl-paste"
+    fi
+    if [[ "${tool}" != /* ]]; then
+        echo "wrap-omp: error: \"clipboard_bridge\" requires ${what} on PATH" >&2
         exit 1
     fi
 
@@ -210,13 +221,16 @@ start_clip_broker() {
         exit 1
     fi
 
-    if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
+    if [[ "${mode}" == "wayland" && -z "${WAYLAND_DISPLAY:-}" ]]; then
         echo "wrap-omp: warning: \"clipboard_bridge\" is enabled but the host has no WAYLAND_DISPLAY" >&2
     fi
 
     CLIP_DIR="$(mktemp -d /tmp/wrap-omp-clip.XXXXXX)"
 
-    python3 "${CLIP_BROKER}" "${CLIP_DIR}/broker.sock" "${CLIP_WL}" &
+    # omp spawns a bare `wl-paste`; the shim is that name, found through PATH
+    install -m 0755 "${CLIP_SHIM}" "${CLIP_DIR}/wl-paste"
+
+    python3 "${CLIP_BROKER}" "${CLIP_DIR}/broker.sock" "${mode}" "${tool}" &
     CLIP_PID=$!
 
     wait_for_socket "${CLIP_DIR}/broker.sock" "${CLIP_PID}" "clipboard broker"
@@ -363,13 +377,15 @@ fi
 
 BWRAP_ARGS+=(--bind "${HOME}/.omp" "${HOME}/.omp")
 
-# clipboard bridge: shim replaces wl-paste, socket dir is the only host object
-# visible to it. Mounted last so no earlier mount can shadow the shim.
+# clipboard bridge: the clip dir holds the wl-paste shim and the broker socket;
+# omp finds the shim through PATH and nothing else from the host is visible.
 if [[ -n "${CLIP_DIR}" ]]; then
-    BWRAP_ARGS+=(
-        --ro-bind "${CLIP_SHIM}" "${CLIP_WL}"
-        --ro-bind "${CLIP_DIR}" "${CLIP_DIR}"
-    )
+    BWRAP_ARGS+=(--ro-bind "${CLIP_DIR}" "${CLIP_DIR}")
+fi
+
+SANDBOX_PATH="${PATH}"
+if [[ -n "${CLIP_DIR}" ]]; then
+    SANDBOX_PATH="${CLIP_DIR}:${SANDBOX_PATH}"
 fi
 
 BWRAP_ARGS+=(
@@ -377,7 +393,7 @@ BWRAP_ARGS+=(
     --setenv container "bwrap" # on Fedora this shows a dot in bash prompt signifying you're in sandbox.
     --setenv HOME "${HOME}"
     --setenv USER "${USER}"
-    --setenv PATH "${PATH}"
+    --setenv PATH "${SANDBOX_PATH}"
 )
 
 # append environment variables form config

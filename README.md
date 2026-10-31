@@ -22,13 +22,23 @@ arguments (`--see`, `--talk`, `--own`, `--call`, `--broadcast`) through.
 
 Image clipboard access is off unless `"clipboard_bridge": true`. `wrap-omp`
 then starts `omp-clip-broker` on the host and binds only its socket and the
-`omp-clip-shim` script into the sandbox (`omp-clip-shim` replaces `wl-paste`).
-The broker serves exactly one thing — the current `image/png` from the host
-Wayland clipboard, capped at 32 MiB. There is no request protocol, no MIME
-argument, no `SET_PNG`, and no clipboard text; the sandbox never gets a Wayland
-socket or `XDG_RUNTIME_DIR`. Copying *out* keeps working through OSC 52 in the
-terminal. Text paste via `ctrl+v` stays unavailable; use the terminal's own
-paste.
+`omp-clip-shim` script into the sandbox (`omp-clip-shim` replaces `wl-paste`,
+found through PATH). The broker serves exactly one thing — the current
+`image/png` from the host clipboard, capped at 32 MiB. On Wayland it reads the
+clipboard with `wl-paste`; on WSL it runs `powershell.exe` through interop on
+the host, so the sandbox never gets `/mnt/c`, `/run/WSL`, or a Windows binary.
+There is no request protocol, no MIME argument, no `SET_PNG`, and no clipboard
+text; the sandbox also never gets a Wayland socket or `XDG_RUNTIME_DIR`.
+Copying *out* keeps working through OSC 52 in the terminal. Text paste via
+`ctrl+v` stays unavailable; use the terminal's own paste.
+
+WSL is `linux`, so omp binds image paste to `ctrl+v` only (`alt+v` is the
+Windows default) and Windows Terminal often consumes `ctrl+v`. Bind it
+explicitly in the omp keybindings if paste does nothing:
+
+```yaml
+app.clipboard.pasteImage: ["ctrl+v", "alt+v"]
+```
 
 The broker socket is `SOCK_SEQPACKET`, so a normal Wayland client
 (`SOCK_STREAM`) pointed at it fails at `connect()` with `EPROTOTYPE` and exits

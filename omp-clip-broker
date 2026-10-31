@@ -3,6 +3,13 @@
 # image/png read; no request bytes are parsed and no MIME type or path comes
 # from the sandbox. The socket is SOCK_SEQPACKET so a SOCK_STREAM Wayland
 # client fails at connect() with EPROTOTYPE instead of reading PNG bytes.
+#
+# Sources (this runs on the host, never inside the sandbox):
+#   wayland <wl-paste>        host Wayland clipboard
+#   wsl     <powershell.exe>  Windows clipboard through WSL interop; the host
+#                             is the only side that can exec it, so the
+#                             sandbox needs no /mnt/c mount
+import base64
 import os
 import socket
 import subprocess
@@ -10,12 +17,84 @@ import sys
 
 MAX_BYTES = 32 << 20
 CHUNK = 64 << 10
-READ_TIMEOUT = 5.0
+READ_TIMEOUT = 8.0  # omp's own powershell timeout
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+# omp's WSL image reader, plus a CF_PNG fallback: GetImage() sees bitmap
+# formats only, while some Windows apps (browsers, Electron) put PNG alone on
+# the clipboard. stdout is the base64 PNG, nothing when there is no image.
+PS_IMAGE = """\
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$ms = $null
+$data = [System.Windows.Forms.Clipboard]::GetDataObject()
+if ($data -ne $null -and $data.GetDataPresent('PNG')) {
+\t$png = $data.GetData('PNG')
+\tif ($png -is [byte[]]) { $ms = [System.IO.MemoryStream]::new([byte[]]$png) } else { $ms = $png }
+}
+if ($ms -eq $null) {
+\t$img = [System.Windows.Forms.Clipboard]::GetImage()
+\tif ($img -ne $null) {
+\t\t$ms = [System.IO.MemoryStream]::new()
+\t\t$img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+\t}
+}
+if ($ms -ne $null) {
+\t[Console]::Out.Write([Convert]::ToBase64String($ms.ToArray()))
+}
+"""
+
+
+def read_wayland(wl_paste):
+    run = subprocess.run(
+        [wl_paste, "--type", "image/png"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        timeout=READ_TIMEOUT,
+    )
+    return run.stdout if run.returncode == 0 else b""
+
+
+def warn(message):
+    # the broker runs on the host, so this reaches the terminal; an empty read
+    # is silence on purpose, a broken interop call should not be
+    print(f"wrap-omp clipboard: {message}", file=sys.stderr, flush=True)
+
+
+def read_wsl(powershell):
+    try:
+        run = subprocess.run(
+            [powershell, "-NoProfile", "-NonInteractive", "-Sta", "-Command", PS_IMAGE],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=READ_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        warn(f"{powershell}: {exc}")
+        return b""
+    if run.returncode != 0:
+        warn(f"{powershell} exited {run.returncode}")
+        return b""
+    if not run.stdout.strip():
+        return b""  # no image on the clipboard, not an error
+    try:
+        data = base64.b64decode(run.stdout)
+    except ValueError as exc:
+        warn(f"bad powershell output: {exc}")
+        return b""
+    # the script only ever writes a PNG; anything else is a broken read
+    if not data.startswith(PNG_MAGIC):
+        warn("powershell output is not a PNG")
+        return b""
+    return data
 
 
 def main():
-    sock_path = sys.argv[1]
-    wl_paste = sys.argv[2]
+    sock_path, mode, tool = sys.argv[1:4]
+    read = {"wayland": read_wayland, "wsl": read_wsl}[mode]
 
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     srv.bind(sock_path)
@@ -26,15 +105,8 @@ def main():
         conn, _ = srv.accept()
         conn.settimeout(2)
         try:
-            run = subprocess.run(
-                [wl_paste, "--type", "image/png"],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                timeout=READ_TIMEOUT,
-            )
-            data = run.stdout
-            if run.returncode == 0 and 0 < len(data) <= MAX_BYTES:
+            data = read(tool)
+            if 0 < len(data) <= MAX_BYTES:
                 for offset in range(0, len(data), CHUNK):
                     conn.sendall(data[offset : offset + CHUNK])
         except (OSError, subprocess.SubprocessError):
