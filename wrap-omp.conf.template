@@ -4,6 +4,14 @@
     "env": [
         "SOME_API_KEY"
     ],
+    // variables set inside the sandbox with these literal values. Nothing is
+    // read from the host, so the host environment stays unchanged. Use this
+    // for switches only the sandboxed program should see, e.g. to keep omp
+    // from writing into a read-only-mounted host home. Accepts strings,
+    // numbers and booleans; entries with a null value are ignored.
+    "set_env": {
+        // "VARIABLE_NAME": "value"
+    },
     // host paths that will be mounted read only in sandbox
     "read_only_mounts": [
         "~/my_git_repos",

@@ -10,6 +10,8 @@
 #
 # Config keys:
 #   "env"                — extra env var names to pull from host into sandbox
+#   "set_env"            — literal NAME: value pairs set inside the sandbox,
+#                          never read from the host
 #   "writeable_mounts"   — extra paths to --bind (read-write)
 #   "read_only_mounts"   — extra paths to --ro-bind
 #   "dbus"               — per-bus xdg-dbus-proxy policy args, e.g.
@@ -47,6 +49,7 @@ fi
 # Config file (optional) — extra mounts and env vars beyond the hardcoded set
 # ---------------------------------------------------------------------------
 EXTRA_ENV_VARS=()
+SET_ENV_PAIRS=()
 EXTRA_BIND_MOUNTS=()
 EXTRA_RO_MOUNTS=()
 DBUS_SYSTEM_ARGS=()
@@ -80,6 +83,27 @@ if [[ -n "${OMP_CONF}" ]]; then
     while IFS=$'\t' read -r -d '' key val; do
         case "${key}" in
             env) EXTRA_ENV_VARS+=("${val}") ;;
+            badset)
+                echo "wrap-omp: error: \"set_env\" must be an object, not ${val}" >&2
+                exit 1
+                ;;
+            setenv)
+                IFS= read -r -d '' name
+                IFS= read -r -d '' type
+                IFS= read -r -d '' val
+                if [[ ! "${name}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+                    echo "wrap-omp: error: invalid \"set_env\" name: ${name}" >&2
+                    exit 1
+                fi
+                case "${type}" in
+                    string | number | boolean) ;;
+                    *)
+                        echo "wrap-omp: error: \"set_env\" ${name} must be a string, number or boolean" >&2
+                        exit 1
+                        ;;
+                esac
+                SET_ENV_PAIRS+=("${name}=${val}")
+                ;;
             rw) EXTRA_BIND_MOUNTS+=("${val/#\~/$HOME}") ;;
             ro) EXTRA_RO_MOUNTS+=("${val/#\~/$HOME}") ;;
             dbus-system) DBUS_SYSTEM_ARGS+=("${val}") ;;
@@ -89,6 +113,12 @@ if [[ -n "${OMP_CONF}" ]]; then
     done < <(printf '%s' "$CLEAN" | jq -j '
         def emit($k): .[]? | select(. != "") | "\($k)\t\(.)\u0000";
         ((.env // []) | emit("env")),
+        ((.set_env // {}) |
+            if type != "object" then "badset\t\(type)\u0000"
+            else to_entries[] |
+                select(.value != null) |
+                "setenv\u0000\(.key)\u0000\(.value | type)\u0000\(.value | tostring)\u0000"
+            end),
         ((.writeable_mounts // []) | emit("rw")),
         ((.read_only_mounts // []) | emit("ro")),
         ((.dbus.system // []) | emit("dbus-system")),
@@ -403,6 +433,11 @@ for var in "${EXTRA_ENV_VARS[@]}"; do
     else
         echo "wrap-omp: warning: ${var} is not set in the environment, skipping" >&2
     fi
+done
+
+# literal variables from config; applied after pulled ones so they win
+for pair in "${SET_ENV_PAIRS[@]}"; do
+    BWRAP_ARGS+=(--setenv "${pair%%=*}" "${pair#*=}")
 done
 
 if [[ -n "${PROXY_SYSTEM}" ]]; then

@@ -16,6 +16,17 @@ __Note:__ This is __NOT__ a protection against malicious plugins or skills. Hack
 ## Configurable
 You can edit `~/.config/wrap-omp.conf` to add variables and files passed to the sandbox
 
+`"env"` copies variables that already exist on the host. `"set_env"` instead
+sets literal values that exist only inside the sandbox:
+
+```json
+"set_env": { "KDE_HOME_READONLY": "1" }
+```
+
+The host environment is untouched, so the variable is visible to omp and the
+commands it runs, but not to anything started outside the sandbox. If the same
+name appears in both `"env"` and `"set_env"`, the `"set_env"` value wins.
+
 D-Bus access is off unless enabled. The `dbus` object starts a filtered
 `xdg-dbus-proxy` for the `system` and/or `session` bus and passes the policy
 arguments (`--see`, `--talk`, `--own`, `--call`, `--broadcast`) through.
