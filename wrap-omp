@@ -14,6 +14,14 @@
 #                          never read from the host
 #   "writeable_mounts"   — extra paths to --bind (read-write)
 #   "read_only_mounts"   — extra paths to --ro-bind
+#   "try_mount_writeable", "try_mount_read_only"
+#                        — same, but a missing path is silently skipped
+#   "shared_temp"        — true to back the sandbox /tmp with a fresh
+#                          directory under the host /tmp instead of a tmpfs,
+#                          so the host can inspect what the sandbox wrote.
+#                          Its host path is exported as REALTEMP so a host-side
+#                          editor shim (omp-code) can remap /tmp paths
+#   "shared_temp_cleanup" — true to delete that directory when the sandbox exits
 #   "dbus"               — per-bus xdg-dbus-proxy policy args, e.g.
 #                          {"system": ["--talk=org.bluez"]}; without an entry
 #                          the sandbox has no access to that bus
@@ -52,9 +60,13 @@ EXTRA_ENV_VARS=()
 SET_ENV_PAIRS=()
 EXTRA_BIND_MOUNTS=()
 EXTRA_RO_MOUNTS=()
+TRY_BIND_MOUNTS=()
+TRY_RO_MOUNTS=()
 DBUS_SYSTEM_ARGS=()
 DBUS_SESSION_ARGS=()
 CLIP_BRIDGE=false
+SHARED_TEMP=false
+SHARED_TEMP_CLEANUP=false
 
 OMP_CONF=""
 for dir in "${HOME}/.config" "${HOME}"; do
@@ -106,8 +118,12 @@ if [[ -n "${OMP_CONF}" ]]; then
                 ;;
             rw) EXTRA_BIND_MOUNTS+=("${val/#\~/$HOME}") ;;
             ro) EXTRA_RO_MOUNTS+=("${val/#\~/$HOME}") ;;
+            rw-try) TRY_BIND_MOUNTS+=("${val/#\~/$HOME}") ;;
+            ro-try) TRY_RO_MOUNTS+=("${val/#\~/$HOME}") ;;
             dbus-system) DBUS_SYSTEM_ARGS+=("${val}") ;;
             dbus-session) DBUS_SESSION_ARGS+=("${val}") ;;
+            sharedtmp) SHARED_TEMP=true ;;
+            sharedtmpcleanup) SHARED_TEMP_CLEANUP=true ;;
             clip) CLIP_BRIDGE=true ;;
         esac
     done < <(printf '%s' "$CLEAN" | jq -j '
@@ -121,11 +137,41 @@ if [[ -n "${OMP_CONF}" ]]; then
             end),
         ((.writeable_mounts // []) | emit("rw")),
         ((.read_only_mounts // []) | emit("ro")),
+        ((.try_mount_writeable // []) | emit("rw-try")),
+        ((.try_mount_read_only // []) | emit("ro-try")),
         ((.dbus.system // []) | emit("dbus-system")),
         ((.dbus.session // []) | emit("dbus-session")),
+        (if (.shared_temp // false) == true then "sharedtmp\t\u0000" else empty end),
+        (if (.shared_temp_cleanup // false) == true then "sharedtmpcleanup\t\u0000" else empty end),
         (if (.clipboard_bridge // false) == true then "clip\t\u0000" else empty end)
     ')
 fi
+
+# Expand simple '*'/'?'/'[' globs in a mount list ('~' is expanded at parse
+# time). A pattern that matches nothing selects nothing.
+expand_mounts() {
+    local -n out="$1"
+    local -a patterns=("${@:2}")
+    local -a matches
+    local p
+    out=()
+    for p in "${patterns[@]}"; do
+        if [[ "$p" == *[\*\?\[]* ]]; then
+            shopt -s nullglob
+            # shellcheck disable=SC2206 # intentional: unquoted glob expansion
+            matches=($p)
+            shopt -u nullglob
+            out+=("${matches[@]}")
+        else
+            out+=("$p")
+        fi
+    done
+}
+
+expand_mounts EXTRA_RO_MOUNTS "${EXTRA_RO_MOUNTS[@]}"
+expand_mounts EXTRA_BIND_MOUNTS "${EXTRA_BIND_MOUNTS[@]}"
+expand_mounts TRY_RO_MOUNTS "${TRY_RO_MOUNTS[@]}"
+expand_mounts TRY_BIND_MOUNTS "${TRY_BIND_MOUNTS[@]}"
 
 # ---------------------------------------------------------------------------
 # D-Bus proxies: one filtered xdg-dbus-proxy per configured bus, socket bound
@@ -139,6 +185,8 @@ CLIP_DIR=""
 CLIP_PID=""
 CLIP_SHIM=""
 CLIP_BROKER=""
+SHARED_TMP=""
+SHARED_TMP_CLEAN=""
 
 cleanup() {
     local pid
@@ -159,6 +207,9 @@ cleanup() {
     fi
     if [[ -n "${CLIP_DIR}" ]]; then
         rm -rf "${CLIP_DIR}"
+    fi
+    if [[ -n "${SHARED_TMP_CLEAN}" ]]; then
+        rm -rf "${SHARED_TMP_CLEAN}"
     fi
 }
 
@@ -198,7 +249,7 @@ start_watchdog() {
         for pid in "${HELPER_PIDS[@]}"; do
             kill "${pid}" 2>/dev/null || true
         done
-        rm -rf "${DBUS_PROXY_DIR}" "${CLIP_DIR}"
+        rm -rf "${DBUS_PROXY_DIR}" "${CLIP_DIR}" "${SHARED_TMP_CLEAN}"
     ) </dev/null >/dev/null 2>&1 &
     WATCHDOG_PID=$!
 }
@@ -322,9 +373,22 @@ BWRAP_ARGS=(
     --proc /proc
     --ro-bind /usr /usr
     --ro-bind /etc /etc
-    --dir "/tmp"
-    --dir "${HOME}"
 )
+
+# sandbox /tmp: a fresh host directory the user can inspect afterwards, or an
+# empty tmpfs. Either way config mounts on /tmp stack on top of it.
+if [[ "${SHARED_TEMP}" == true ]]; then
+    SHARED_TMP="$(mktemp -d "${TMPDIR:-/tmp}/wrap-omp-tmp.XXXXXX")"
+    echo "wrap-omp: shared /tmp: ${SHARED_TMP}" >&2
+    if [[ "${SHARED_TEMP_CLEANUP}" == true ]]; then
+        SHARED_TMP_CLEAN="${SHARED_TMP}"
+    fi
+    BWRAP_ARGS+=(--bind "${SHARED_TMP}" /tmp)
+else
+    BWRAP_ARGS+=(--dir /tmp)
+fi
+
+BWRAP_ARGS+=(--dir "${HOME}")
 
 # /etc/resolv.conf is normally a link into /run (systemd-resolved, resolvconf,
 # NetworkManager). The link arrives with /etc; only its target must be
@@ -355,6 +419,15 @@ done
 
 for mnt in "${EXTRA_BIND_MOUNTS[@]}"; do
     BWRAP_ARGS+=(--bind "$mnt" "$mnt")
+done
+
+# a missing source here is silently skipped by bwrap
+for mnt in "${TRY_RO_MOUNTS[@]}"; do
+    BWRAP_ARGS+=(--ro-bind-try "$mnt" "$mnt")
+done
+
+for mnt in "${TRY_BIND_MOUNTS[@]}"; do
+    BWRAP_ARGS+=(--bind-try "$mnt" "$mnt")
 done
 
 # filtered D-Bus access: proxy runs on the host, only the socket is bound in
@@ -426,6 +499,11 @@ BWRAP_ARGS+=(
     --setenv PATH "${SANDBOX_PATH}"
 )
 
+# host path behind the sandbox /tmp; omp-code remaps /tmp arguments with it
+if [[ -n "${SHARED_TMP}" ]]; then
+    BWRAP_ARGS+=(--setenv REALTEMP "${SHARED_TMP}")
+fi
+
 # append environment variables form config
 for var in "${EXTRA_ENV_VARS[@]}"; do
     if [[ -v "${var}" ]]; then
@@ -459,7 +537,7 @@ BWRAP_ARGS+=(
     "${OMP_BIN}"
 )
 
-if [[ ${#DBUS_PROXY_PIDS[@]} -gt 0 || -n "${CLIP_DIR}" ]]; then
+if [[ ${#DBUS_PROXY_PIDS[@]} -gt 0 || -n "${CLIP_DIR}" || -n "${SHARED_TMP_CLEAN}" ]]; then
     HELPER_PIDS=("${DBUS_PROXY_PIDS[@]}")
     if [[ -n "${CLIP_PID}" ]]; then
         HELPER_PIDS+=("${CLIP_PID}")

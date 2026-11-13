@@ -27,6 +27,31 @@ The host environment is untouched, so the variable is visible to omp and the
 commands it runs, but not to anything started outside the sandbox. If the same
 name appears in both `"env"` and `"set_env"`, the `"set_env"` value wins.
 
+`"read_only_mounts"` and `"writeable_mounts"` accept simple `*` globs. Their
+`"try_mount_read_only"` / `"try_mount_writeable"` variants differ only in that a
+path that does not exist is skipped instead of failing the sandbox.
+
+`"shared_temp": true` backs the sandbox `/tmp` with a fresh directory under the
+host `/tmp` (`mktemp -d`, printed on stderr at startup, kept after exit)
+instead of an empty tmpfs, so you can inspect what the sandbox wrote. Other
+mounts on `/tmp` still stack on top of it. `"shared_temp_cleanup": true`
+deletes that directory when the sandbox exits.
+
+The directory's host path is exported to the sandbox as `REALTEMP`. A host
+editor launched from inside the sandbox cannot open `/tmp/foo` directly, since
+that path only means something inside the sandbox; `omp-code` is a
+`$VISUAL`/`$EDITOR` shim that rewrites `/tmp/...` arguments to
+`$REALTEMP/...` and leaves everything else alone:
+
+```json
+"set_env": { "VISUAL": "omp-code", "EDITOR": "omp-code" }
+```
+
+It runs `/usr/bin/code` on the host with `--ozone-platform=headless
+--logsPath /tmp/vscode-logs` (that log path stays the literal `/tmp` path) and
+moves the given files after those flags. With `REALTEMP` unset it passes
+arguments through unchanged.
+
 D-Bus access is off unless enabled. The `dbus` object starts a filtered
 `xdg-dbus-proxy` for the `system` and/or `session` bus and passes the policy
 arguments (`--see`, `--talk`, `--own`, `--call`, `--broadcast`) through.
@@ -63,9 +88,10 @@ Just a read only copy of your system intended to prevent agent from installing p
 
 # Usage
 ## Installation
-- copy `wrap-omp`, `omp-clip-shim` and `omp-clip-broker` to your executable
-  path. For example `cp wrap-omp omp-clip-shim omp-clip-broker ~/.local/bin`
-  (the shim and broker must sit next to `wrap-omp`)
+- copy `wrap-omp`, `omp-clip-shim`, `omp-clip-broker` and `omp-code` to
+  your executable path. For example `cp wrap-omp omp-clip-shim omp-clip-broker
+  omp-code ~/.local/bin` (the shim, broker and code wrapper must sit next
+  to `wrap-omp`)
 - copy config template and adapt it for your needs: `cp wrap-omp.conf.template ~/.config/wrap-omp.conf`
 
 ## Running

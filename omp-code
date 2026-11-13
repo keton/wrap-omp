@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# omp-code: $VISUAL/$EDITOR shim for a VS Code instance running on the host.
+#
+# With "shared_temp" enabled the sandbox /tmp is the host directory named by
+# REALTEMP, so /tmp/foo inside the sandbox does not exist on the host. Every
+# argument below /tmp is remapped to $REALTEMP/...; other arguments pass
+# unchanged. Outside the sandbox (REALTEMP unset) the script is a plain
+# `code` invocation.
+#
+# shortcut: a path mounted on top of the shared /tmp (e.g. a wrap-omp dbus
+# socket dir) keeps its own host path and is still remapped; upgrade if such
+# paths ever need opening.
+set -euo pipefail
+
+CODE=/usr/bin/code
+# host path, deliberately not remapped: these flags work around VS Code bugs
+# when it is launched from the sandbox
+BASE_ARGS=(--ozone-platform=headless --logsPath /tmp/vscode-logs)
+
+args=()
+for arg in "$@"; do
+    if [[ -n "${REALTEMP:-}" ]]; then
+        case "${arg}" in
+            /tmp) arg="${REALTEMP}" ;;
+            /tmp/*) arg="${REALTEMP}/${arg#/tmp/}" ;;
+        esac
+    fi
+    args+=("${arg}")
+done
+
+exec "${CODE}" "${BASE_ARGS[@]}" "${args[@]}"

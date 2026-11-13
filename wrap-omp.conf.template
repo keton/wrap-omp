@@ -12,7 +12,8 @@
     "set_env": {
         // "VARIABLE_NAME": "value"
     },
-    // host paths that will be mounted read only in sandbox
+    // host paths that will be mounted read only in sandbox. Entries may use
+    // a simple '*' glob; a pattern matching nothing mounts nothing.
     "read_only_mounts": [
         "~/my_git_repos",
         "~/.gitconfig"
@@ -22,6 +23,9 @@
     "writeable_mounts": [
         "~/some_writeable_dir"
     ],
+    // same as above, but a path that does not exist is skipped silently
+    "try_mount_read_only": [],
+    "try_mount_writeable": [],
     // filtered D-Bus access through xdg-dbus-proxy. Nothing is exposed by
     // default: a bus is reachable from the sandbox only if its list is
     // non-empty. The proxy runs on the host and only its socket is mounted in;
@@ -46,5 +50,12 @@
     // use powershell.exe on the host, so the sandbox needs no /mnt/c or
     // /run/WSL mount. Clipboard text is never exposed. Requires omp-clip-shim
     // and omp-clip-broker installed next to wrap-omp.
-    "clipboard_bridge": false
+    "clipboard_bridge": false,
+    // back the sandbox /tmp with a fresh directory under the host /tmp
+    // (named on stderr at startup) instead of an empty tmpfs, so the host can
+    // inspect what the sandbox wrote. Mounts on /tmp still stack on top.
+    // The directory's host path is exported to the sandbox as REALTEMP.
+    "shared_temp": false,
+    // delete that directory when the sandbox exits instead of keeping it
+    "shared_temp_cleanup": false
 }
