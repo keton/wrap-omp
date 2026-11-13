@@ -26,6 +26,9 @@
     // same as above, but a path that does not exist is skipped silently
     "try_mount_read_only": [],
     "try_mount_writeable": [],
+    // host paths mounted writeable with --dev-bind, so device nodes inside
+    // them stay usable (e.g. /dev/dri for GPU access)
+    "dev_mounts": [],
     // filtered D-Bus access through xdg-dbus-proxy. Nothing is exposed by
     // default: a bus is reachable from the sandbox only if its list is
     // non-empty. The proxy runs on the host and only its socket is mounted in;

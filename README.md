@@ -31,6 +31,11 @@ name appears in both `"env"` and `"set_env"`, the `"set_env"` value wins.
 `"try_mount_read_only"` / `"try_mount_writeable"` variants differ only in that a
 path that does not exist is skipped instead of failing the sandbox.
 
+`"dev_mounts"` is the writeable counterpart for paths holding device nodes: it
+maps to bwrap's `--dev-bind`, so nodes inside stay usable (e.g. `/dev/dri` for
+GPU access, `/dev/snd` for audio). Globs work the same way, and a missing path
+fails the sandbox like `"writeable_mounts"`.
+
 `"shared_temp": true` backs the sandbox `/tmp` with a fresh directory under the
 host `/tmp` (`mktemp -d`, printed on stderr at startup, kept after exit)
 instead of an empty tmpfs, so you can inspect what the sandbox wrote. Other

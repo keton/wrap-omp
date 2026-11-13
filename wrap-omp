@@ -16,6 +16,8 @@
 #   "read_only_mounts"   — extra paths to --ro-bind
 #   "try_mount_writeable", "try_mount_read_only"
 #                        — same, but a missing path is silently skipped
+#   "dev_mounts"         — extra paths to --dev-bind (writeable and may
+#                          contain device nodes), e.g. /dev/dri for GPU access
 #   "shared_temp"        — true to back the sandbox /tmp with a fresh
 #                          directory under the host /tmp instead of a tmpfs,
 #                          so the host can inspect what the sandbox wrote.
@@ -62,6 +64,7 @@ EXTRA_BIND_MOUNTS=()
 EXTRA_RO_MOUNTS=()
 TRY_BIND_MOUNTS=()
 TRY_RO_MOUNTS=()
+DEV_MOUNTS=()
 DBUS_SYSTEM_ARGS=()
 DBUS_SESSION_ARGS=()
 CLIP_BRIDGE=false
@@ -120,6 +123,7 @@ if [[ -n "${OMP_CONF}" ]]; then
             ro) EXTRA_RO_MOUNTS+=("${val/#\~/$HOME}") ;;
             rw-try) TRY_BIND_MOUNTS+=("${val/#\~/$HOME}") ;;
             ro-try) TRY_RO_MOUNTS+=("${val/#\~/$HOME}") ;;
+            dev) DEV_MOUNTS+=("${val/#\~/$HOME}") ;;
             dbus-system) DBUS_SYSTEM_ARGS+=("${val}") ;;
             dbus-session) DBUS_SESSION_ARGS+=("${val}") ;;
             sharedtmp) SHARED_TEMP=true ;;
@@ -139,6 +143,7 @@ if [[ -n "${OMP_CONF}" ]]; then
         ((.read_only_mounts // []) | emit("ro")),
         ((.try_mount_writeable // []) | emit("rw-try")),
         ((.try_mount_read_only // []) | emit("ro-try")),
+        ((.dev_mounts // []) | emit("dev")),
         ((.dbus.system // []) | emit("dbus-system")),
         ((.dbus.session // []) | emit("dbus-session")),
         (if (.shared_temp // false) == true then "sharedtmp\t\u0000" else empty end),
@@ -172,6 +177,7 @@ expand_mounts EXTRA_RO_MOUNTS "${EXTRA_RO_MOUNTS[@]}"
 expand_mounts EXTRA_BIND_MOUNTS "${EXTRA_BIND_MOUNTS[@]}"
 expand_mounts TRY_RO_MOUNTS "${TRY_RO_MOUNTS[@]}"
 expand_mounts TRY_BIND_MOUNTS "${TRY_BIND_MOUNTS[@]}"
+expand_mounts DEV_MOUNTS "${DEV_MOUNTS[@]}"
 
 # ---------------------------------------------------------------------------
 # D-Bus proxies: one filtered xdg-dbus-proxy per configured bus, socket bound
@@ -428,6 +434,11 @@ done
 
 for mnt in "${TRY_BIND_MOUNTS[@]}"; do
     BWRAP_ARGS+=(--bind-try "$mnt" "$mnt")
+done
+
+# --bind with device access, for paths holding device nodes (e.g. /dev/dri)
+for mnt in "${DEV_MOUNTS[@]}"; do
+    BWRAP_ARGS+=(--dev-bind "$mnt" "$mnt")
 done
 
 # filtered D-Bus access: proxy runs on the host, only the socket is bound in
